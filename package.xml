@@ -1,0 +1,23 @@
+<package format="2">
+  <name>inverse_simulation</name>
+  <version>1.0.0</version>
+  <description>
+    This package provides perception systems with the capabilities of explaining their observations and the state of the world.
+  </description>
+  <maintainer email="fkenghag@uni-bremen.de">Franklin Kenghagho Kenfack</maintainer>
+  <license>BSD</license>
+
+  <url>https://ai.uni-bremen.de/team/franklin_kenghagho_kenfack</url>
+  <author>Franklin Kenghagho Kenfack</author>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>std_msgs</depend>
+
+  <build_depend>message_generation</build_depend>
+  <build_depend>forward_simulation_rendering</build_depend>
+
+  <exec_depend>message_runtime</exec_depend>
+  <exec_depend>rospy</exec_depend>
+</package>
