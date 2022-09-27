@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import PIL
 import cv2
 import json
 import math
@@ -7,7 +8,7 @@ import sys
 import gi
 from graph_tool.all import *
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gio, Gtk, Pango, Gdk
+from gi.repository import GLib, Gio, Gtk, Pango, Gdk, GdkPixbuf
 import cairo
 import numpy as np
 # This would typically be its own file
@@ -65,9 +66,9 @@ class ImaginationAreaFrame(Gtk.Frame):
         self.min_index=-1
         self.area = Gtk.DrawingArea()
         self.add(self.area)
+        self.imagination=None
 
         self.init_surface(self.area)
-        self.context = cairo.Context(self.surface)
         self.area.set_events(Gdk.EventMask.BUTTON_PRESS_MASK)
         self.area.add_events(Gdk.EventMask.BUTTON_RELEASE_MASK)
         self.area.add_events(Gdk.EventMask.POINTER_MOTION_MASK)
@@ -76,6 +77,21 @@ class ImaginationAreaFrame(Gtk.Frame):
         self.area.connect('motion-notify-event', self.on_press)
         self.area.connect("draw", self.on_draw)
         self.area.connect('configure-event', self.on_configure)
+
+    def imagine(self):
+        self.imagination=[]
+        filename = "../../resources/litImage.jpg"
+        self.imagination.append(cv2.imread(filename))
+        filename = "../../resources/maskImage.jpg"
+        self.imagination.append(cv2.imread(filename))
+        filename = "../../resources/depthImage.jpg"
+        self.imagination.append(cv2.imread(filename))
+
+
+    def forget(self):
+        if self.imagination is not None:
+            del self.imagination
+            self.imagination=None
 
     def set_nearest_vertex(self, x,y,delta=30.0):
         pass
@@ -93,8 +109,6 @@ class ImaginationAreaFrame(Gtk.Frame):
         if self.surface is not None:
             self.surface.finish()
             self.surface = None
-
-        # Create a new buffer
         self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.area.get_allocated_width(),self.area.get_allocated_width())
 
     def redraw(self):
@@ -116,21 +130,35 @@ class ImaginationAreaFrame(Gtk.Frame):
             print('Invalid surface')
         return False
 
-    def draw_radial_gradient_rect(self, ctx):
+    def draw_image(self, ctx):
+        if self.imagination is None:
+            ctx.rectangle(0.0, 0, 1.0, 1.0)
+            ctx.set_source_rgba(1.0,1.0,1.0,1.0)
+            ctx.fill()
+        else:
+            x_space=5
+            x_dim=self.imagination[0].shape[1] +x_space+self.imagination[1].shape[1]+ x_space+self.imagination[2].shape[1]
+            y_dim=max(self.imagination[0].shape[0], self.imagination[1].shape[0], self.imagination[2].shape[0])
+            z_dim=max(self.imagination[0].shape[2], self.imagination[1].shape[2], self.imagination[2].shape[2],4)
+            img_arr = np.ones([y_dim, x_dim, z_dim], dtype="uint8")*255
+            for l in range(3):
+                img_arr[:self.imagination[0].shape[0] , :self.imagination[0].shape[1] , l] = self.imagination[0][:, :, l]
+                img_arr[:self.imagination[1].shape[0] , self.imagination[0].shape[1]+x_space:self.imagination[0].shape[1]+x_space+self.imagination[1].shape[1], l] = self.imagination[1][:, :, l]
+                img_arr[:self.imagination[2].shape[0], self.imagination[0].shape[1] +self.imagination[1].shape[1]+2*x_space:, l] = self.imagination[2][:, :, l]
+            # im = PIL.Image.open(filename)
+            img_arr=cv2.resize(img_arr, (0,0), fx=self.area.get_allocated_width()*1.0/(1.0*x_dim), fy=self.area.get_allocated_width()*1.0/(1.0*x_dim))
+            # im.putalpha(256)  # create alpha channel
+            # arr = np.array(im)
+            height, width, channels = img_arr.shape
+            self.surface = cairo.ImageSurface.create_for_data(img_arr, cairo.FORMAT_ARGB32, width, height)
+            # surface = cairo.ImageSurface.create_for_data(arr, cairo.FORMAT_ARGB32, width, height)
+            print("IMAGE SHAPE", height, width, channels)
+            # Create a new buffer
 
-        x0, y0 = 0.3, 0.3
-        x1, y1 = 0.5, 0.5
-        r0 = 0
-        r1 = 1
-        pattern = cairo.RadialGradient(x0, y0, r0, x1, y1, r1)
-        pattern.add_color_stop_rgba(0, 1, 1, 0.5, 1)
-        pattern.add_color_stop_rgba(1, 0.2, 0.4, 0.1, 1)
-        ctx.rectangle(0, 0, 1, 1)
-        ctx.set_source(pattern)
-        ctx.fill()
+
 
     def do_drawing(self, ctx):
-        self.draw_radial_gradient_rect(ctx)
+        self.draw_image(ctx)
 
 
 
@@ -148,11 +176,10 @@ class OntologyAreaFrame(Gtk.Frame):
         self.min_index=-1
         self.area = Gtk.DrawingArea()
         self.add(self.area)
-
+        self.g=None
+        self.c=None
+        self.x=None
         self.init_surface(self.area)
-        self.context = cairo.Context(self.surface)
-        #self.build_graph()
-        #graph_tool.draw.cairo_draw(self.g, self.pos, self.context, vertex_text=self.x, vertex_color=self.c)
         self.area.set_events(Gdk.EventMask.BUTTON_PRESS_MASK)
         self.area.add_events(Gdk.EventMask.BUTTON_RELEASE_MASK)
         self.area.add_events(Gdk.EventMask.POINTER_MOTION_MASK)
@@ -211,6 +238,11 @@ class OntologyAreaFrame(Gtk.Frame):
 
 
                     print("SOME MOTION")
+
+    def destroy_graph(self):
+        if self.g is not None:
+            self.g.clear()
+            self.g=None
 
     def build_graph(self):
 
@@ -322,23 +354,17 @@ class OntologyAreaFrame(Gtk.Frame):
             print('Invalid surface')
         return False
 
-    def draw_radial_gradient_rect(self, ctx):
+    def draw_graph(self, ctx):
 
-        x0, y0 = 0.3, 0.3
-        x1, y1 = 0.5, 0.5
-        r0 = 0
-        r1 = 1
-        pattern = cairo.RadialGradient(x0, y0, r0, x1, y1, r1)
-        pattern.add_color_stop_rgba(0, 1, 1, 0.5, 1)
-        pattern.add_color_stop_rgba(1, 0.2, 0.4, 0.1, 1)
-        ctx.rectangle(0, 0, 1, 1)
-        ctx.set_source_rgb(1, 1, 1)
-        ctx.fill()
-
-        graph_tool.draw.cairo_draw(self.g, self.pos, ctx, edge_dash_style=[.005, .005, 0],  edge_end_marker=self.m, edge_font_family="bahnschrift", vertex_font_family="bahnschrift", vertex_font_size=12, edge_font_size=20, edge_marker_size=18, vertex_fill_color=[.7, .8, .9, 0.9], vertex_color=self.c, edge_text=self.y, vertex_text=self.x, vertex_shape=self.s, vertex_size=80,vertex_halo_size=1.2,vertex_halo=self.h,vertex_pen_width=3.0, edge_pen_width=1)
+        if self.g is None:
+            ctx.rectangle(0, 0, 1, 1)
+            ctx.set_source_rgb(1, 1, 1)
+            ctx.fill()
+        else:
+            graph_tool.draw.cairo_draw(self.g, self.pos, ctx, edge_dash_style=[.005, .005, 0],  edge_end_marker=self.m, edge_font_family="bahnschrift", vertex_font_family="bahnschrift", vertex_font_size=12, edge_font_size=20, edge_marker_size=18, vertex_fill_color=[.7, .8, .9, 0.9], vertex_color=self.c, edge_text=self.y, vertex_text=self.x, vertex_shape=self.s, vertex_size=80,vertex_halo_size=1.2,vertex_halo=self.h,vertex_pen_width=3.0, edge_pen_width=1)
 
     def do_drawing(self, ctx):
-        self.draw_radial_gradient_rect(ctx)
+        self.draw_graph(ctx)
 
 
 class SearchDialog(Gtk.Dialog):
@@ -415,6 +441,7 @@ class AppWindow(Gtk.ApplicationWindow):
         self.context_editor_frame.add(self.grid)
 
         self.add(self.top_grid)
+        #print("SIZE GRID", self.top_grid.get_size())
         self.top_grid.attach(self.lsepartor_label, 0, 0, 1, 1)
         self.top_grid.attach(self.rsepartor_label, 114, 0, 1, 1)
         self.top_grid.attach(self.bsepartor_label, 0, 2, 1, 1)
@@ -560,6 +587,7 @@ class AppWindow(Gtk.ApplicationWindow):
 
     def do_clicked(self, widget):
         if(widget==self.proceed_button):
+            self.imagination_frame.imagine()
             self.imagination_frame.redraw()
             self.imagination_frame.area.queue_draw()
             self.ontology_frame.build_graph()
@@ -569,9 +597,12 @@ class AppWindow(Gtk.ApplicationWindow):
         else:
             if(widget==self.reset_button):
                 self.textbuffer.set_text(json.dumps(self.context_template, indent=28, sort_keys=True))
-                self.ontology_frame.g.clear()
+                self.ontology_frame.destroy_graph()
                 self.ontology_frame.redraw()
                 self.ontology_frame.area.queue_draw()
+                self.imagination_frame.forget()
+                self.imagination_frame.redraw()
+                self.imagination_frame.area.queue_draw()
 
 
     def on_button_clicked(self, widget, tag):
