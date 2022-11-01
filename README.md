@@ -3,6 +3,6 @@ This module of [NaivPhys4RP](https://github.com/NaivPhys4RP/naivphys4rp/) explai
 
 
 <p align=center>
-<img src="resources/Architecture.png"></img>
+<img src="resources/Architecture1.png"></img>
 </p>
 
