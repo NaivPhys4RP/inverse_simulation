@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import time
 import lark
-from threading import Thread
+from threading import *
 import PIL
 import cv2
 import json
@@ -12,20 +12,29 @@ import gi
 import actionlib
 import roslib
 from difflib import SequenceMatcher
+
 roslib.load_manifest('rosprolog')
 roslib.load_manifest('naivphys4rp_msgs')
 import rospy
 from rosprolog_client import PrologException, Prolog
 from naivphys4rp_msgs.msg import *
-gi.require_version('WebKit2', '4.0') 
+
+gi.require_version('WebKit2', '4.0')
 from gi.repository import WebKit2
 from pyvis.network import Network
 import networkx as nx
+
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gio, Gtk, Pango, Gdk, GdkPixbuf
+
 import cairo
 import numpy as np
 from graph_tool.all import *
+import sys
+
+sys.path.append("../imagination")
+from imagination import *
+
 # This would typically be its own file
 MENU_XML = """
 <?xml version="1.0" encoding="UTF-8"?>
@@ -70,6 +79,25 @@ MENU_XML = """
 </interface>
 """
 
+THREAD_KILLABLE = False  # global variable
+
+
+class StoppableThread(Thread):
+    """ A Thread that can be stopped """
+
+    def __init__(self, *args, **kwargs):
+        super(StoppableThread, self).__init__(*args, **kwargs)
+        self._stop_event = Event()
+        self.kill = False
+
+    def stop(self):
+        self.skill = True
+        self._stop_event.set()
+
+    def stopped(self):
+        return self._stop_event.is_set()
+
+
 class ImaginationAreaFrame(Gtk.Frame):
     def __init__(self, css=None, border_width=0):
         super().__init__()
@@ -78,10 +106,10 @@ class ImaginationAreaFrame(Gtk.Frame):
         self.vexpand = True
         self.hexpand = True
         self.surface = None
-        self.min_index=-1
+        self.min_index = -1
         self.area = Gtk.DrawingArea()
         self.add(self.area)
-        self.imagination=None
+        self.imagination = None
 
         self.init_surface(self.area)
         self.area.set_events(Gdk.EventMask.BUTTON_PRESS_MASK)
@@ -93,24 +121,16 @@ class ImaginationAreaFrame(Gtk.Frame):
         self.area.connect("draw", self.on_draw)
         self.area.connect('configure-event', self.on_configure)
 
-    def imagine(self):
-        self.imagination=[]
-        filename = "../../../resources/litImage.jpg"
-        self.imagination.append(cv2.imread(filename))
-        filename = "../../../resources/maskImage.jpg"
-        self.imagination.append(cv2.imread(filename))
-        filename = "../../../resources/depthImage.jpg"
-        self.imagination.append(cv2.imread(filename))
-
+    def imagine(self, images):
+        self.imagination = images
 
     def forget(self):
         if self.imagination is not None:
             del self.imagination
-            self.imagination=None
+            self.imagination = None
 
-    def set_nearest_vertex(self, x,y,delta=30.0):
+    def set_nearest_vertex(self, x, y, delta=30.0):
         pass
-
 
     def on_release(self):
         pass
@@ -118,13 +138,13 @@ class ImaginationAreaFrame(Gtk.Frame):
     def on_press(self, widget, event):
         pass
 
-
     def init_surface(self, area):
         # Destroy previous buffer
         if self.surface is not None:
             self.surface.finish()
             self.surface = None
-        self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.area.get_allocated_width(),self.area.get_allocated_width())
+        self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.area.get_allocated_width(),
+                                          self.area.get_allocated_width())
 
     def redraw(self):
         self.init_surface(self.area)
@@ -148,20 +168,26 @@ class ImaginationAreaFrame(Gtk.Frame):
     def draw_image(self, ctx):
         if self.imagination is None:
             ctx.rectangle(0.0, 0, 1.0, 1.0)
-            ctx.set_source_rgba(1.0,1.0,1.0,1.0)
+            ctx.set_source_rgba(1.0, 1.0, 1.0, 1.0)
             ctx.fill()
         else:
-            x_space=5
-            x_dim=self.imagination[0].shape[1] +x_space+self.imagination[1].shape[1]+ x_space+self.imagination[2].shape[1]
-            y_dim=max(self.imagination[0].shape[0], self.imagination[1].shape[0], self.imagination[2].shape[0])
-            z_dim=max(self.imagination[0].shape[2], self.imagination[1].shape[2], self.imagination[2].shape[2],4)
-            img_arr = np.ones([y_dim, x_dim, z_dim], dtype="uint8")*255
+            x_space = 5
+            x_dim = self.imagination[0].shape[1] + x_space + self.imagination[1].shape[1] + x_space + \
+                    self.imagination[2].shape[1]
+            y_dim = max(self.imagination[0].shape[0], self.imagination[1].shape[0], self.imagination[2].shape[0])
+            z_dim = max(self.imagination[0].shape[2], self.imagination[1].shape[2], self.imagination[2].shape[2], 4)
+            img_arr = np.ones([y_dim, x_dim, z_dim], dtype="uint8") * 255
             for l in range(3):
-                img_arr[:self.imagination[0].shape[0] , :self.imagination[0].shape[1] , l] = self.imagination[0][:, :, l]
-                img_arr[:self.imagination[1].shape[0] , self.imagination[0].shape[1]+x_space:self.imagination[0].shape[1]+x_space+self.imagination[1].shape[1], l] = self.imagination[1][:, :, l]
-                img_arr[:self.imagination[2].shape[0], self.imagination[0].shape[1] +self.imagination[1].shape[1]+2*x_space:, l] = self.imagination[2][:, :, l]
+                img_arr[:self.imagination[0].shape[0], :self.imagination[0].shape[1], l] = self.imagination[0][:, :, l]
+                img_arr[:self.imagination[1].shape[0],
+                self.imagination[0].shape[1] + x_space:self.imagination[0].shape[1] + x_space +
+                                                       self.imagination[1].shape[1], l] = self.imagination[1][:, :, l]
+                img_arr[:self.imagination[2].shape[0],
+                self.imagination[0].shape[1] + self.imagination[1].shape[1] + 2 * x_space:, l] = self.imagination[2][:,
+                                                                                                 :, l]
             # im = PIL.Image.open(filename)
-            img_arr=cv2.resize(img_arr, (0,0), fx=self.area.get_allocated_width()*1.0/(1.0*x_dim), fy=self.area.get_allocated_width()*1.0/(1.0*x_dim))
+            img_arr = cv2.resize(img_arr, (0, 0), fx=self.area.get_allocated_width() * 1.0 / (1.0 * x_dim),
+                                 fy=self.area.get_allocated_width() * 1.0 / (1.0 * x_dim))
             # im.putalpha(256)  # create alpha channel
             # arr = np.array(im)
             height, width, channels = img_arr.shape
@@ -170,11 +196,8 @@ class ImaginationAreaFrame(Gtk.Frame):
             print("IMAGE SHAPE", height, width, channels)
             # Create a new buffer
 
-
-
     def do_drawing(self, ctx):
         self.draw_image(ctx)
-
 
 
 ####################################################################################################################################################################################
@@ -205,66 +228,65 @@ class OntologyAreaFrame(Gtk.Frame):
         self.view.set_settings(self.settings)
         self.add(self.view)
         self.view.load_html("", "ontology.html")
-	
-    def set_nearest_vertex(self, x,y,delta=30.0):
-        self.min_index=-1
-        min_dist=+math.inf
-        #print("Num vertices",self.g.num_vertices())
-        for i in range(self.g.num_vertices()):
-            x2=self.pos[i][0]*self.area.get_allocated_width()
-            y2=self.pos[i][1]*self.area.get_allocated_width()
-            print(x,y,x2,y2)
-            d=np.sqrt(pow(x-x2,2)+pow(y-y2,2))
-            if(d<min_dist) and (d<=delta):
-                min_dist=d
-                self.min_index=i
 
+    def set_nearest_vertex(self, x, y, delta=30.0):
+        self.min_index = -1
+        min_dist = +math.inf
+        # print("Num vertices",self.g.num_vertices())
+        for i in range(self.g.num_vertices()):
+            x2 = self.pos[i][0] * self.area.get_allocated_width()
+            y2 = self.pos[i][1] * self.area.get_allocated_width()
+            print(x, y, x2, y2)
+            d = np.sqrt(pow(x - x2, 2) + pow(y - y2, 2))
+            if (d < min_dist) and (d <= delta):
+                min_dist = d
+                self.min_index = i
 
     def on_release(self):
         if self.min_index > -1:
             self.h[self.min_index] = False
-            self.min_index=-1
+            self.min_index = -1
             self.redraw()
             self.area.queue_draw()
 
     def on_press(self, widget, event):
-        if event.type==Gdk.EventType.BUTTON_PRESS:
+        if event.type == Gdk.EventType.BUTTON_PRESS:
             print(event.x, event.y, event.type)
             self.set_nearest_vertex(event.x, event.y)
-            if self.min_index>-1:
-                self.h[self.min_index]=True
-                self.mouseX=event.x
-                self.mouseY=event.y
+            if self.min_index > -1:
+                self.h[self.min_index] = True
+                self.mouseX = event.x
+                self.mouseY = event.y
                 self.redraw()
                 self.area.queue_draw()
         else:
-            if event.type==Gdk.EventType.BUTTON_RELEASE:
+            if event.type == Gdk.EventType.BUTTON_RELEASE:
                 self.on_release()
             else:
-                if event.type==Gdk.EventType.MOTION_NOTIFY and self.min_index>-1:
-
-                    deltaX=event.x-self.mouseX
+                if event.type == Gdk.EventType.MOTION_NOTIFY and self.min_index > -1:
+                    deltaX = event.x - self.mouseX
                     deltaY = event.y - self.mouseY
                     self.mouseX = event.x
                     self.mouseY = event.y
-                    self.pos[self.min_index][0]=min(max(self.pos[self.min_index][0]+deltaX/self.area.get_allocated_width(),0.),1.0)
-                    self.pos[self.min_index][1] = min(max(self.pos[self.min_index][1] + deltaY / self.area.get_allocated_width(), 0.), 1.0)
+                    self.pos[self.min_index][0] = min(
+                        max(self.pos[self.min_index][0] + deltaX / self.area.get_allocated_width(), 0.), 1.0)
+                    self.pos[self.min_index][1] = min(
+                        max(self.pos[self.min_index][1] + deltaY / self.area.get_allocated_width(), 0.), 1.0)
                     self.redraw()
                     self.area.queue_draw()
-
 
                     print("SOME MOTION")
 
     def destroy_graph(self):
         if self.g is not None:
             self.g.clear()
-            self.g=None
+            self.g = None
 
     def build_graph(self):
 
         self.g = Graph(directed=True)
         v1 = self.g.add_vertex()
-        v12=self.g.add_vertex()
+        v12 = self.g.add_vertex()
         v2 = self.g.add_vertex()
         v3 = self.g.add_vertex()
         v31 = self.g.add_vertex()
@@ -296,7 +318,7 @@ class OntologyAreaFrame(Gtk.Frame):
         self.y[e134] = ""
 
         self.m = self.g.new_edge_property("string")
-        self.m[e012]="none"
+        self.m[e012] = "none"
         self.m[e112] = "arrow"
         self.m[e031] = "none"
         self.m[e131] = "arrow"
@@ -313,24 +335,24 @@ class OntologyAreaFrame(Gtk.Frame):
         self.s[v34] = "square"
 
         self.c = self.g.new_vertex_property("vector<float>")
-        self.c[v2] = np.array([1.,0., 0.0, 1.],dtype="float")
-        self.c[v1] = np.array([0.7,0., 0.0, 1.],dtype="float")
-        self.c[v3] = np.array([0.5,0., 0.0, 1.],dtype="float")
-        self.c[v4] = np.array([0.3,0., 0.0, 1.],dtype="float")
-        self.c[v12]=(self.c[v1].get_array()+self.c[v2].get_array())/2.
-        self.c[v31] = (self.c[v3].get_array()+self.c[v1].get_array())/2.
-        self.c[v34] = (self.c[v4].get_array()+self.c[v3].get_array())/2.
-        self.pos=self.g.new_vertex_property("vector<float>")
-        self.pos[v1] = np.array([0.3,0.3*0.4],dtype="float")
-        self.pos[v2] = np.array([0.3,0.9*0.4],dtype="float")
-        self.pos[v3] = np.array([0.7, 0.3*0.4], dtype="float")
-        self.pos[v4] = np.array([0.9, 0.9*0.4], dtype="float")
-        self.pos[v31] = (self.pos[v1].get_array()+self.pos[v3].get_array())/2.
-        self.pos[v12] = (self.pos[v1].get_array()+self.pos[v2].get_array())/2.
-        self.pos[v34] = (self.pos[v4].get_array()+self.pos[v3].get_array())/2.
+        self.c[v2] = np.array([1., 0., 0.0, 1.], dtype="float")
+        self.c[v1] = np.array([0.7, 0., 0.0, 1.], dtype="float")
+        self.c[v3] = np.array([0.5, 0., 0.0, 1.], dtype="float")
+        self.c[v4] = np.array([0.3, 0., 0.0, 1.], dtype="float")
+        self.c[v12] = (self.c[v1].get_array() + self.c[v2].get_array()) / 2.
+        self.c[v31] = (self.c[v3].get_array() + self.c[v1].get_array()) / 2.
+        self.c[v34] = (self.c[v4].get_array() + self.c[v3].get_array()) / 2.
+        self.pos = self.g.new_vertex_property("vector<float>")
+        self.pos[v1] = np.array([0.3, 0.3 * 0.4], dtype="float")
+        self.pos[v2] = np.array([0.3, 0.9 * 0.4], dtype="float")
+        self.pos[v3] = np.array([0.7, 0.3 * 0.4], dtype="float")
+        self.pos[v4] = np.array([0.9, 0.9 * 0.4], dtype="float")
+        self.pos[v31] = (self.pos[v1].get_array() + self.pos[v3].get_array()) / 2.
+        self.pos[v12] = (self.pos[v1].get_array() + self.pos[v2].get_array()) / 2.
+        self.pos[v34] = (self.pos[v4].get_array() + self.pos[v3].get_array()) / 2.
 
-        self.h=self.g.new_vertex_property("bool")
-        self.h[v1]=False
+        self.h = self.g.new_vertex_property("bool")
+        self.h[v1] = False
         self.h[v2] = False
         self.h[v3] = False
         self.h[v4] = False
@@ -338,8 +360,8 @@ class OntologyAreaFrame(Gtk.Frame):
         self.h[v31] = False
         self.h[v34] = False
 
-        self.mouseX=0.0
-        self.mouseY=0.0
+        self.mouseX = 0.0
+        self.mouseY = 0.0
 
     def init_surface(self, area):
         # Destroy previous buffer
@@ -348,7 +370,8 @@ class OntologyAreaFrame(Gtk.Frame):
             self.surface = None
 
         # Create a new buffer
-        self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.area.get_allocated_width(),self.area.get_allocated_width())
+        self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.area.get_allocated_width(),
+                                          self.area.get_allocated_width())
 
     def redraw(self):
         print(self.g, self.c, self.x)
@@ -377,7 +400,12 @@ class OntologyAreaFrame(Gtk.Frame):
             ctx.set_source_rgb(1, 1, 1)
             ctx.fill()
         else:
-            graph_tool.draw.cairo_draw(self.g, self.pos, ctx, edge_dash_style=[.005, .005, 0],  edge_end_marker=self.m, edge_font_family="bahnschrift", vertex_font_family="bahnschrift", vertex_font_size=12, edge_font_size=20, edge_marker_size=18, vertex_fill_color=[.7, .8, .9, 0.9], vertex_color=self.c, edge_text=self.y, vertex_text=self.x, vertex_shape=self.s, vertex_size=80,vertex_halo_size=1.2,vertex_halo=self.h,vertex_pen_width=3.0, edge_pen_width=1)
+            graph_tool.draw.cairo_draw(self.g, self.pos, ctx, edge_dash_style=[.005, .005, 0], edge_end_marker=self.m,
+                                       edge_font_family="bahnschrift", vertex_font_family="bahnschrift",
+                                       vertex_font_size=12, edge_font_size=20, edge_marker_size=18,
+                                       vertex_fill_color=[.7, .8, .9, 0.9], vertex_color=self.c, edge_text=self.y,
+                                       vertex_text=self.x, vertex_shape=self.s, vertex_size=80, vertex_halo_size=1.2,
+                                       vertex_halo=self.h, vertex_pen_width=3.0, edge_pen_width=1)
 
     def do_drawing(self, ctx):
         self.draw_graph(ctx)
@@ -403,101 +431,135 @@ class SearchDialog(Gtk.Dialog):
 
         self.show_all()
 
+
 class Transformers():
     def __init__(self, state_verb):
-        self.state_verb=state_verb
+        self.state_verb = state_verb
 
     def context(self, trees):
         interpretation = []
         for statements in trees.children:
             if statements is not None:
-                if statements.__class__==lark.Tree:
-                    if statements.data.value=='statement':
-                        interpretation=interpretation+self.statement(statements)
+                if statements.__class__ == lark.Tree:
+                    if statements.data.value == 'statement':
+                        interpretation = interpretation + self.statement(statements)
         return interpretation
 
-    def statement(self,trees):
-        subject=self.decompose(trees.children[0])
-        subject_noun=subject['noun'][0]
-        object=self.decompose(trees.children[2])
-        subject_adjectiv=subject['adjectiv']
-        subject_terminal=self.getTerminal(subject_noun)
+    def statement(self, trees):
+        subject = self.decompose(trees.children[0])
+        subject_noun = subject['noun'][0]
+        object = self.decompose(trees.children[2])
+        subject_adjectiv = subject['adjectiv']
+        subject_terminal = self.getTerminal(subject_noun)
         object_noun = object['noun'][0]
         object_adjectiv = object['adjectiv']
-        object_terminal=self.getTerminal(object_noun)
-        interpretation=[[subject_terminal,self.getTerminal(trees.children[1]), object_terminal]]
-        interpretation=interpretation+self.subject(subject_adjectiv,subject_terminal)+self.object(object_adjectiv,object_terminal)
+        object_terminal = self.getTerminal(object_noun)
+        interpretation = [[subject_terminal, self.getTerminal(trees.children[1]), object_terminal]]
+        interpretation = interpretation + self.subject(subject_adjectiv, subject_terminal) + self.object(
+            object_adjectiv, object_terminal)
         return interpretation
 
-    def subject(self,adjectives, noun):
-        interpretation=[]
+    def subject(self, adjectives, noun):
+        interpretation = []
         for adj in adjectives:
-            interpretation.append([str(noun),self.state_verb,self.getTerminal(adj)])
+            interpretation.append([str(noun), self.state_verb, self.getTerminal(adj)])
         return interpretation
 
-    def object(self,adjectives, noun):
-        interpretation=[]
+    def object(self, adjectives, noun):
+        interpretation = []
         for adj in adjectives:
-            interpretation.append([str(noun),self.state_verb,self.getTerminal(adj)])
+            interpretation.append([str(noun), self.state_verb, self.getTerminal(adj)])
         return interpretation
 
-    def decompose(self,trees):
-        result={'noun':[],'adjectiv':[]}
+    def decompose(self, trees):
+        result = {'noun': [], 'adjectiv': []}
         for res in trees.children:
-            if  (res is not None) and (res.__class__==lark.Tree) and (res.data.value in ["noun","adjectiv"]):
+            if (res is not None) and (res.__class__ == lark.Tree) and (res.data.value in ["noun", "adjectiv"]):
                 result[res.data.value].append(res)
         return result
 
-    def getTerminal(self,trees):
-        terminal=""
+    def getTerminal(self, trees):
+        terminal = ""
         if trees is None:
             pass
         else:
-            if trees.__class__==lark.Tree:
+            if trees.__class__ == lark.Tree:
                 for elt in trees.children:
-                    r=self.getTerminal(elt)
-                    if len(terminal)>0 and len(r)>0:
-                        terminal=terminal+" "+r
+                    r = self.getTerminal(elt)
+                    if len(terminal) > 0 and len(r) > 0:
+                        terminal = terminal + " " + r
                     else:
                         terminal = terminal + r
             else:
-                r=str(trees)
+                r = str(trees)
                 if len(terminal) > 0 and len(r) > 0:
                     terminal = terminal + " " + r
                 else:
                     terminal = terminal + r
         return terminal
 
+
+# The tab object for monitoring different aspects of the framework
+class MovableFrame():
+    def __init__(self, title, parent):
+        self.title = title
+        self.parent = parent
+        self.header = Gtk.HBox()
+        self.title = Gtk.Label(label=title)
+        image = Gtk.Image()
+        image.set_from_stock(Gtk.STOCK_CLOSE, Gtk.IconSize.MENU)
+        close_button = Gtk.Button()
+        close_button.set_image(image)
+        close_button.set_relief(Gtk.ReliefStyle.NONE)
+        close_button.connect("clicked", self.on_movable_frame_close)
+        self.header.pack_start(self.title,expand=True, fill=True, padding=0)
+        self.header.pack_end(close_button,expand=False, fill=False, padding=0)
+        self.header.show_all()
+    def on_movable_frame_close(self, button):
+        self.parent.remove_page(self.parent.get_current_page())
+
+# The tab object for monitoring different aspects of the framework
+class SetMovableFrame(Gtk.Notebook):
+    def add_movable_frame(self, title, widget):
+        movable_frame = MovableFrame(title, self)
+        self.append_page(widget, movable_frame.header)
+
+
 class AppWindow(Gtk.ApplicationWindow):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.resize(1920, 1080)
-        #the graph
+        # the graph
         self.nt = None
-        #create action client for ontology
-        self.path_name="/ontology/naivphys4rp.owl"
-        self.package="belief_state"
+        self.thread = None
+        self.thread_robot = None
+        self.observation_frequency = 30.  # in Hz
+        # Imagination framework
+
+        # create action client for ontology
+        self.path_name = "/ontology/naivphys4rp.owl"
+        self.package = "belief_state"
         self.namespace = "http://www.semanticweb.org/franklin/ontologies/2022/7/naivphys4rp.owl#"  # default ontology's namespace
-        self.concepts=[]
-        self.relations=[]
+        self.concepts = []
+        self.relations = []
         self.symbol_grounding_table = {}
         self.onto_load_client = actionlib.SimpleActionClient('naivphys4rp_knowrob_load', KBLoadOntologyAction)
         print("Client ontology loading is started !")
         print("Waiting for action server ...")
         self.onto_load_client.wait_for_server()
         print("Loading ontology ...")
-        self.grammarFile='grammar.json'
-        self.grammar=json.dumps("{}")
-        self.state_verb="is"
+        self.grammarFile = 'grammar.json'
+        self.grammar = json.dumps("{}")
+        self.state_verb = "is"
         self.grammar = """
         	context: (statement delimiter)*
 
         	statement: subject verb object
-        	
+
         	object: [determinant] (adjectiv)* noun
-        	
+
         	subject: [determinant] (adjectiv)* noun
-        	
+
         	determinant: DET
 
         	verb: iverb | dverb
@@ -511,29 +573,29 @@ class AppWindow(Gtk.ApplicationWindow):
         	dverb: DVERB
 
         	preposition: PREP
-        	
+
         	adjectiv: (COLOR|SIZE|SHAPE|MATERIAL|TIGHTNESS)
-            
+
             FULLSTOP: "."
-            
+
             COMMA: ","
-        
-            DVERB: "has" | "is" | "participates" | "makes" | "cooks" | "prepares" | "pours" | "moves" | "transports" | "picks"  ["up"] | "places" | "sees" | "observes" | "looks" | "perceives"
-        
+
+            DVERB: "has" | "is" | "participates" | "makes" | "cooks" | "prepares" | "pours" | "moves" | "transports" | "picks"  ["up"] | "places" | "sees" | "observes" | "looks" | "perceives" | "inserts" | "inserted" | "tests" 
+
             PREP: "in" | "on" | "over" | "under" | "of" | "at" | "to" | "behind" | "left to" | "right to" | "near to" | "far from" | "near" | "in front of"
 
-        	NOUN: "box" | "milk" | "robot" | "bowl" | "spoon" | "bottle" | "table" | "fridge" | "mug" | "drawer" | "island" | "sink" | "muesli" | "cornflakes" | "kitchen"
-        	
-        	DET: "a" | "an" | "the"
-        	
+        	NOUN: "box" | "milk" | "robot" | "bowl" | "spoon" | "bottle" | "table" | "fridge" | "mug" | "drawer" | "island" | "sink" | "muesli" | "cornflakes" | "kitchen" | "breakfast" | "pump" | "rinse fluid" | "sample fluid"| "fluid" | "fluid" | "drain tray" | "tray" | "canister"| "sterility test table"
+
+        	DET: "a" | "an" | "the" | "another"
+
             COLOR: "red" | "orange" | "brown" | "yellow" | "green" | "blue" | "white" | "gray" | "black" | "violet" |"pink"
-            
+
             SHAPE: "cubic" |"conical" | "cylindrical" | "filiform" | "flat" | "rectangular" | "circular" | "triangular"
-            
+
             MATERIAL: "plastic" | "woody" | "glass" | "steel" | "carton" | "ceramic"
-            
+
             TIGHTNESS: "solid" | "gaz" | "liquid" | "powder"
-            
+
             SIZE: "large" | "big" | "medium" | "small" | "tiny"
 
         	%import common.ESCAPED_STRING
@@ -544,15 +606,16 @@ class AppWindow(Gtk.ApplicationWindow):
 
         	%ignore WS
         """
-        self.json_parser = lark.Lark(self.grammar, start="context",ambiguity='explicit')
+        self.text=""
+        self.json_parser = lark.Lark(self.grammar, start="context", ambiguity='explicit')
 
-        goal=KBLoadOntologyGoal()
-        goal.package=self.package
-        goal.namespace=self.namespace
-        goal.relative_path=self.path_name
+        goal = KBLoadOntologyGoal()
+        goal.package = self.package
+        goal.namespace = self.namespace
+        goal.relative_path = self.path_name
         self.onto_load_client.send_goal(goal)
         self.onto_load_client.wait_for_result()
-        if(self.onto_load_client.get_result().status==True):
+        if (self.onto_load_client.get_result().status == True):
             print("Ontology loaded successfully!")
         else:
             print("Ontology failed to load!!!")
@@ -569,7 +632,8 @@ class AppWindow(Gtk.ApplicationWindow):
         self.onto_property_client.wait_for_server()
         print("Action server subproperty loaded")
 
-        self.onto_list_property_client = actionlib.SimpleActionClient('naivphys4rp_knowrob_list_property', KBListPropertyAction)
+        self.onto_list_property_client = actionlib.SimpleActionClient('naivphys4rp_knowrob_list_property',
+                                                                      KBListPropertyAction)
         print("Client list property is started !")
         print("Waiting for action server list property...")
         self.onto_list_property_client.wait_for_server()
@@ -581,11 +645,40 @@ class AppWindow(Gtk.ApplicationWindow):
         self.onto_list_class_client.wait_for_server()
         print("Action server list class loaded")
 
-        self.onto_property_io_client = actionlib.SimpleActionClient('naivphys4rp_knowrob_property_io', KBPropertyIOAction)
+        self.onto_property_io_client = actionlib.SimpleActionClient('naivphys4rp_knowrob_property_io',
+                                                                    KBPropertyIOAction)
         print("Client property io is started !")
         print("Waiting for action server property io...")
         self.onto_property_io_client.wait_for_server()
         print("Action server property io loaded")
+
+        self.list_participant_client = actionlib.SimpleActionClient('naivphys4rp_list_participant',
+                                                                    KBListParticipantAction)
+        print("Client list prticipant is started !")
+        print("Waiting for action server list participant...")
+        self.list_participant_client.wait_for_server()
+        print("Action server list participant loaded")
+
+        self.role_to_object_client = actionlib.SimpleActionClient('naivphys4rp_role_to_object',
+                                                                  KBFromRoleToObjectAction)
+        print("Client role to object is started !")
+        print("Waiting for action server role to object...")
+        self.role_to_object_client.wait_for_server()
+        print("Action server role to object loaded")
+
+        self.domain_relation_client = actionlib.SimpleActionClient('naivphys4rp_domain_relation',
+                                                                   KBDomainRelationAction)
+        print("Client domain relation is started !")
+        print("Waiting for action server domain relation...")
+        self.domain_relation_client.wait_for_server()
+        print("Action server domain relation loaded")
+
+        self.potential_action_object_client = actionlib.SimpleActionClient('naivphys4rp_potential_action_object',
+                                                                           KBPotentialActionObjectAction)
+        print("Client potential action object is started !")
+        print("Waiting for action server potential action object...")
+        self.potential_action_object_client.wait_for_server()
+        print("Action server potential action object loaded")
 
         """
                 ################## List of Class ########################################
@@ -629,7 +722,7 @@ class AppWindow(Gtk.ApplicationWindow):
             print("Knowrob query executed successfully!")
             for cls in results.classes:
                 if len(cls.split(self.generic_class_prefix)) < 2 and len(cls.split(self.namespace)) >= 2:
-                    self.classes[cls.split(self.namespace).pop()]=cls
+                    self.classes[cls.split(self.namespace).pop()] = cls
             print(len(self.classes), self.classes)
         else:
             print("Knowrob query failed!!")
@@ -648,11 +741,11 @@ class AppWindow(Gtk.ApplicationWindow):
             print("Knowrob query executed successfully!")
             for cls in results.propertyes:
                 if len(cls.split(self.generic_class_prefix)) < 2 and len(cls.split(self.namespace)) >= 2:
-                    self.object_properties[cls.split(self.namespace).pop()]=cls
+                    self.object_properties[cls.split(self.namespace).pop()] = cls
             print(len(self.object_properties), self.object_properties)
         else:
             print("Knowrob query failed!!")
-        self.object_properties[self.state_verb]="rdfs:SubClassOf"
+        self.object_properties[self.state_verb] = "rdfs:SubClassOf"
 
         ################## List of Action as Object Property ########################################
         goal = KBSubClassGoal()
@@ -688,21 +781,90 @@ class AppWindow(Gtk.ApplicationWindow):
             print("Knowrob query executed successfully!")
             for cls in results.propertyes:
                 if len(cls.split(self.generic_class_prefix)) < 2 and len(cls.split(self.namespace)) >= 2:
-                    self.data_properties[cls.split(self.namespace).pop()]=cls
+                    self.data_properties[cls.split(self.namespace).pop()] = cls
             print(len(self.data_properties), self.data_properties)
         else:
             print("Knowrob query failed!!")
 
         ######################### List of property range ################################
-        self.property_io={}
+        self.property_io = {}
         for prop in self.data_properties:
             goal = KBPropertyIOGoal()
-            goal.type_range="extension"
+            goal.type_range = "extension"
             goal.namespace = self.namespace
             goal.property_name = prop.split(self.namespace).pop()
             self.onto_property_io_client.send_goal(goal)
             self.onto_property_io_client.wait_for_result()
             self.property_io[prop] = self.onto_property_io_client.get_result().erange
+
+        ######################### List of disposition ################################
+        goal = KBSubClassGoal()
+        results = KBSubClassResult()
+        goal.class_name = 'Role'
+        goal.is_sub = True
+        goal.namespace = self.namespace
+        self.roles = {}
+        self.onto_class_client.send_goal(goal)
+        self.onto_class_client.wait_for_result()
+        results = self.onto_class_client.get_result()
+        self.generic_class_prefix = "_:Description"
+        if (len(results.classes) > 0):
+            print("Knowrob query executed successfully!")
+            for cls in results.classes:
+                if len(cls.split(self.generic_class_prefix)) < 2:
+                    self.roles[cls.split(self.namespace).pop()] = {}
+                    self.roles[cls.split(self.namespace).pop()]['url'] = cls
+            print("***************************", self.roles)
+        else:
+            print("Knowrob query failed!!")
+
+        ######################### List of object per disposition ################################
+        for disposition in self.roles.keys():
+            goal = KBFromRoleToObjectGoal()
+            results = KBFromRoleToObjectResult()
+            goal.class_name = disposition
+            goal.namespace = self.namespace
+            self.roles[disposition]['object'] = []
+            self.role_to_object_client.send_goal(goal)
+            self.role_to_object_client.wait_for_result()
+            results = self.role_to_object_client.get_result()
+            results.classes = list(set(results.classes))
+            for cls in results.classes:
+                if len(cls.split(self.generic_class_prefix)) < 2:
+                    self.roles[disposition]['object'].append(cls.split(self.namespace).pop())
+
+        ######################### List of relation to action domain ################################
+        for disposition in self.roles.keys():
+            goal = KBDomainRelationGoal()
+            results = KBDomainRelationResult()
+            goal.class_name = disposition
+            goal.type = 'Action'
+            goal.namespace = self.namespace
+            self.roles[disposition]['action_relation'] = []
+            self.domain_relation_client.send_goal(goal)
+            self.domain_relation_client.wait_for_result()
+            results = self.domain_relation_client.get_result()
+            results.relations = list(set(results.relations))
+            for cls in results.relations:
+                if len(cls.split(self.generic_class_prefix)) < 2:
+                    self.roles[disposition]['action_relation'].append(cls.split(self.namespace).pop())
+
+        ######################### List of relation to object domain ################################
+        for disposition in self.roles.keys():
+            goal = KBDomainRelationGoal()
+            results = KBDomainRelationResult()
+            goal.class_name = disposition
+            goal.type = 'Object'
+            goal.namespace = self.namespace
+            self.roles[disposition]['object_relation'] = []
+            self.domain_relation_client.send_goal(goal)
+            self.domain_relation_client.wait_for_result()
+            results = self.domain_relation_client.get_result()
+            results.relations = list(set(results.relations))
+            for cls in results.relations:
+                if len(cls.split(self.generic_class_prefix)) < 2:
+                    self.roles[disposition]['object_relation'].append(cls.split(self.namespace).pop())
+        print("+++++++++++++++++++++++++++++++++++++++++++", self.roles)
 
         # This will be in the windows group and have the "win" prefix
         max_action = Gio.SimpleAction.new_stateful(
@@ -729,13 +891,13 @@ class AppWindow(Gtk.ApplicationWindow):
         self.label = Gtk.Label(label=lbl_variant.get_string(), margin=30)
         self.grid = Gtk.Grid()
         self.top_grid = Gtk.Grid(column_homogeneous=True, column_spacing=10, row_spacing=10)
-        self.context_editor_frame=Gtk.Frame()
+        self.context_editor_frame = Gtk.Frame()
         self.ontology_frame = OntologyAreaFrame()
         self.imagination_frame = ImaginationAreaFrame()
-        self.ce_label=Gtk.Label(label="", margin=10)
+        self.ce_label = Gtk.Label(label="", margin=10)
         self.ce_label.set_markup("<b>Context Editor - Abstract Context Description Language (ACDL)</b>")
         self.context_editor_frame.set_label_widget(self.ce_label)
-        #self.grid.attach(self.label, 1, 20, 2, 1)
+        # self.grid.attach(self.label, 1, 20, 2, 1)
 
         self.o_label = Gtk.Label(label="", margin=10)
         self.o_label.set_markup("<b>Ontology - Context formalization</b>")
@@ -751,47 +913,59 @@ class AppWindow(Gtk.ApplicationWindow):
 
         self.context_editor_frame.add(self.grid)
 
-        self.add(self.top_grid)
-        #print("SIZE GRID", self.top_grid.get_size())
+        # print("SIZE GRID", self.top_grid.get_size())
         self.top_grid.attach(self.lsepartor_label, 0, 0, 1, 1)
         self.top_grid.attach(self.rsepartor_label, 114, 0, 1, 1)
         self.top_grid.attach(self.bsepartor_label, 0, 49, 1, 1)
-        self.top_grid.attach(self.context_editor_frame,1,0,40,49)
+        self.top_grid.attach(self.context_editor_frame, 1, 0, 40, 49)
         self.top_grid.attach(self.ontology_frame, 41, 0, 72, 31)
         self.top_grid.attach(self.imagination_frame, 41, 31, 72, 18)
         self.create_textview()
         self.create_toolbar()
         self.create_buttons()
+        self.setFrame=SetMovableFrame()
+        ########################################## Adding imagination frame ##############################################
+        self.movable_imagination_frame=Gtk.Frame()
+        self.movable_imagination_frame.add(self.top_grid)
+        self.setFrame.add_movable_frame("Imagination",self.movable_imagination_frame)
+        ######################################### Adding belief state frame ##############################################
+        self.movable_belief_state_frame = Gtk.Frame()
+        self.movable_belief_state_frame.add(self.top_grid)
+        self.setFrame.add_movable_frame("Belief State", self.movable_belief_state_frame)
+        ##################################################################################################################
+        self.add(self.setFrame)
         self.grid.show_all()
         self.top_grid.show_all()
+        self.show_all()
+        self.imaginator = Imagination()
 
-    def getBaseName(self,lists):
+    def getBaseName(self, lists):
         return [r.split(self.namespace).pop() for r in lists]
 
-    def closest(self,s,l):
-        l=list(l)
-        s=s.lower().replace('_','').replace(' ','')
-        res=l[0]
-        dist=+np.Inf
+    def closest(self, s, l):
+        l = list(l)
+        s = s.lower().replace('_', '').replace(' ', '')
+        res = l[0]
+        dist = +np.Inf
         for r in l:
-            re = r.lower().replace('_','').replace(' ','')
-            d=self.distance(s,re)
-            if d<dist:
-                dist=d
-                res=r
+            re = r.lower().replace('_', '').replace(' ', '')
+            d = self.distance(s, re)
+            if d < dist:
+                dist = d
+                res = r
         return res
 
     def distance(self, str1, str2):
-        m=SequenceMatcher(None,str1,str2).find_longest_match(0,len(str1), 0,len(str2))
-        return len(str1)+len(str2)-2*m.size
+        m = SequenceMatcher(None, str1, str2).find_longest_match(0, len(str1), 0, len(str2))
+        return len(str1) + len(str2) - 2 * m.size
 
     def parse_context(self, text):
         try:
-            parsing=self.json_parser.parse(text.lower())
-            return (True, parsing,Transformers(self.state_verb).context(parsing))
+            parsing = self.json_parser.parse(text.lower())
+            return (True, parsing, Transformers(self.state_verb).context(parsing))
         except Exception as e:
             print(e)
-            return (False,str(e),[])
+            return (False, str(e), [])
         """
         #reading grammar file
         with open(self.grammarFile, 'r') as infile:
@@ -803,7 +977,6 @@ class AppWindow(Gtk.ApplicationWindow):
             json.load(infile,self.grammar)
         infile.close()
         """
-
 
     def create_toolbar(self):
         toolbar = Gtk.Toolbar()
@@ -872,15 +1045,16 @@ class AppWindow(Gtk.ApplicationWindow):
 
     def create_textview(self):
         scrolledwindow = Gtk.ScrolledWindow()
-        #scrolledwindow.set_min_content_height(50)
-        #scrolledwindow.set_min_content_width(50)
-        #scrolledwindow.set_hexpand(True)
+        # scrolledwindow.set_min_content_height(50)
+        # scrolledwindow.set_min_content_width(50)
+        # scrolledwindow.set_hexpand(True)
         scrolledwindow.set_vexpand(True)
         self.grid.attach(scrolledwindow, 0, 1, 4, 5)
 
         self.textview = Gtk.TextView()
         self.textbuffer = self.textview.get_buffer()
-        self.context_template=json.loads('{"who": {"type": "robot", "name":"PR2"}, "where": {"type": "location", "name": "kitchen"}, "what": {"type":"action", "name":"preparing", "object":"Breakfast"}, "why":{}, "how":{}, "when":{}}')
+        self.context_template = json.loads(
+            '{"who": {"type": "robot", "name":"PR2"}, "where": {"type": "location", "name": "kitchen"}, "what": {"type":"action", "name":"preparing", "object":"Breakfast"}, "why":{}, "how":{}, "when":{}}')
 
         self.textbuffer.set_text(
             json.dumps(self.context_template, indent=28, sort_keys=True)
@@ -909,9 +1083,9 @@ class AppWindow(Gtk.ApplicationWindow):
         check_editable.connect("toggled", self.on_editable_toggled)
         self.grid.attach(check_editable, 1, 10, 1, 1)
 
-        check_cursor = Gtk.CheckButton(label="Cursor Visible")
-        check_cursor.set_active(True)
-        check_editable.connect("toggled", self.on_cursor_toggled)
+        check_cursor = Gtk.CheckButton(label="Thrid View")
+        check_cursor.set_active(False)
+        check_cursor.connect("toggled", self.on_cursor_toggled)
         self.grid.attach_next_to(
             check_cursor, check_editable, Gtk.PositionType.RIGHT, 1, 1
         )
@@ -920,7 +1094,7 @@ class AppWindow(Gtk.ApplicationWindow):
         self.dynamic_button.set_active(True)
         self.dynamic_button.connect("toggled", self.on_dynamic_toggled)
         self.grid.attach_next_to(
-            self.dynamic_button,check_cursor, Gtk.PositionType.RIGHT, 1, 1
+            self.dynamic_button, check_cursor, Gtk.PositionType.RIGHT, 1, 1
         )
         self.spinner = Gtk.Spinner()
         """
@@ -933,7 +1107,7 @@ class AppWindow(Gtk.ApplicationWindow):
         self.imageFrame.add(self.image)
         """
         self.grid.attach(self.spinner, 3, 0, 1, 1)
-        #self.spinner.start()
+        # self.spinner.start()
 
         radio_wrapnone = Gtk.RadioButton.new_with_label_from_widget(None, "No Wrapping")
         self.grid.attach(radio_wrapnone, 1, 11, 1, 1)
@@ -956,117 +1130,256 @@ class AppWindow(Gtk.ApplicationWindow):
         radio_wrapchar.connect("toggled", self.on_wrap_toggled, Gtk.WrapMode.CHAR)
         radio_wrapword.connect("toggled", self.on_wrap_toggled, Gtk.WrapMode.WORD)
 
+    def move_robot(self):
+        global THREAD_KILLABLE
+        while not THREAD_KILLABLE:
+            #self.imaginator.move_robot_right(steps=0.1)
+            #self.imaginator.move_robot_left(steps=0.1)
+            self.imaginator.move_robot_forward(steps=0.4)
+            self.imaginator.turn_robot_head_down(steps=0.6)
+            self.imaginator.turn_robot_head_left(steps=0.3)
+            self.imaginator.turn_robot_left(steps=0.3)
+            self.imaginator.turn_robot_right(steps=0.3)
+            self.imaginator.turn_robot_head_up(steps=0.6)
+            self.imaginator.move_robot_backward(steps=0.4)
+            self.imaginator.turn_robot_head_right(steps=0.3)
+            time.sleep(1./(2*self.observation_frequency))
+
     def build_graph(self):
-        #parse input context
-        startIter, endIter = self.textbuffer.get_bounds()
-        text = self.textbuffer.get_text(startIter, endIter, False)
-        res=self.parse_context(text)
+        # parse input context
+        global THREAD_KILLABLE
+        self.imaginator.initialize_robot_pose()
+        self.imaginator.park_robot_arms()
+        data=0
+        res = self.parse_context(self.text)
+        text=self.text
         if res[0]:
             title0 = "\n 0. Input Context Description as Informal Narrative \n\n\n"
-            result0=text
-            title1="\n\n\n 1. Syntactical Parsing of Context Description \n\n\n"
-            result1=res[1].pretty()
-            self.textbuffer.set_text(title0+result0+title1+result1)
-            start_iter = self.textbuffer.get_start_iter()
-            end_iter=self.textbuffer.get_end_iter()
-            start_iter.forward_chars(0)
-            end_iter.backward_chars(len(result0+title1+result1))
-            self.textbuffer.apply_tag(self.textbuffer.get_tag_table().lookup('bold'), start_iter, end_iter)
-            start_iter.forward_chars(len(title0+result0))
-            end_iter.forward_chars(len(result0 + title1))
-            self.textbuffer.apply_tag(self.textbuffer.get_tag_table().lookup('bold'), start_iter,end_iter)
+            result0 = text
+            title1 = "\n\n\n 1. Syntactical Parsing of Context Description \n\n\n"
+            result1 = res[1].pretty()
+            data = [title0, result0, title1, result1]
+            GLib.idle_add(self.update_textview, data)
         else:
             title0 = "\n 0. Input Context Description as Informal Narrative \n\n\n"
             result0 = text
             title1 = "\n\n\n 1. Syntactical Parsing of Context Description \n\n\n"
-            result1 = "\n\n\n Error(s) found: \n\n"+str(res[1])
-            self.textbuffer.set_text(title0+result0+title1+result1)
-            start_iter = self.textbuffer.get_start_iter()
-            end_iter=self.textbuffer.get_end_iter()
-            start_iter.forward_chars(0)
-            end_iter.backward_chars(len(result0+title1+result1))
-            self.textbuffer.apply_tag(self.textbuffer.get_tag_table().lookup('bold'), start_iter, end_iter)
-            start_iter.forward_chars(len(title0+result0))
-            end_iter.forward_chars(len(result0 + title1))
-            self.textbuffer.apply_tag(self.textbuffer.get_tag_table().lookup('bold'), start_iter,end_iter)
+            result1 = "\n\n\n Error(s) found: \n\n" + str(res[1])
+            data = [title0, result0, title1, result1]
+            GLib.idle_add(self.update_textview, data)
             self.spinner.stop()
             return
-        if res[2]==[]:
+        if res[2] == []:
             self.textbuffer.set_text(str(res[1]))
             self.spinner.stop()
             return
         graph = res[2]
         graph.sort()
-        graph=list(graph for graph,_ in itertools.groupby(graph))
+        graph = list(graph for graph, _ in itertools.groupby(graph))
 
         # symbol grounding
 
         self.symbol_grounding_table = {}
         for rel in graph:
             if rel[0] not in self.symbol_grounding_table.keys():
-                self.symbol_grounding_table[rel[0]]=self.classes[self.closest(rel[0],self.classes.keys())]
+                self.symbol_grounding_table[rel[0]] = self.classes[self.closest(rel[0], self.classes.keys())]
 
             if rel[1] != self.state_verb:
-                self.symbol_grounding_table[rel[2]]=self.classes[self.closest(rel[2],self.classes.keys())]
-                res=self.closest(rel[1], self.object_properties.keys())
-                print("***************************************** ",res,rel[1],self.object_properties.keys())
+                self.symbol_grounding_table[rel[2]] = self.classes[self.closest(rel[2], self.classes.keys())]
+                res = self.closest(rel[1], self.object_properties.keys())
+                print("***************************************** ", res, rel[1], self.object_properties.keys())
                 self.symbol_grounding_table[rel[1]] = self.object_properties[res]
             else:
-                key=None
-                rel2=rel[2][:1].upper()+rel[2][1:]
-                print("++++++++++++++++++++++++++++ ",rel2)
+                key = None
+                rel2 = rel[2][:1].upper() + rel[2][1:]
+                print("++++++++++++++++++++++++++++ ", rel2)
                 for k in self.data_properties.keys():
                     if rel2 in self.property_io[k]:
-                        key=k
+                        key = k
                         break
                 if key is None:
                     self.symbol_grounding_table[rel[2]] = self.classes[self.closest(rel[2], self.classes.keys())]
-                    self.symbol_grounding_table[rel[1]] = self.object_properties[self.closest(rel[1], self.object_properties.keys())]
+                    self.symbol_grounding_table[rel[1]] = self.object_properties[
+                        self.closest(rel[1], self.object_properties.keys())]
                 else:
                     self.symbol_grounding_table[rel[1]] = self.data_properties[key]
-                    self.symbol_grounding_table[rel[2]] = "owl:oneOf(rdfs:range("+str(self.data_properties[key])+"))"
-        #Build String
-        title2= "\n 2. Grounding of Narrative Symbols in the Ontology \n\n\n"
-        result2=""
+                    self.symbol_grounding_table[rel[2]] = "owl:oneOf(rdfs:range(" + str(
+                        self.data_properties[key]) + "))"
+        # Build String
+        title2 = "\n 2. Grounding of Narrative Symbols in the Ontology \n\n\n"
+        result2 = ""
         for elt in self.symbol_grounding_table.keys():
-            result2=result2+elt+" ----> "+self.symbol_grounding_table[elt]+"\n\n"
-        self.textbuffer.set_text(title0 + result0 + title1 + result1+ title2 + result2)
-        start_iter = self.textbuffer.get_start_iter()
-        end_iter = self.textbuffer.get_end_iter()
-        start_iter.forward_chars(0)
-        end_iter.backward_chars(len(result0 + title1 + result1+ title2 + result2))
-        self.textbuffer.apply_tag(self.textbuffer.get_tag_table().lookup('bold'), start_iter, end_iter)
-        start_iter.forward_chars(len(title0 + result0))
-        end_iter.forward_chars(len(result0 + title1))
-        self.textbuffer.apply_tag(self.textbuffer.get_tag_table().lookup('bold'), start_iter, end_iter)
-        start_iter = self.textbuffer.get_start_iter()
-        end_iter = self.textbuffer.get_end_iter()
-        start_iter.forward_chars(len(title0+result0+title1+result1))
-        end_iter.backward_chars(len(result2))
-        self.textbuffer.apply_tag(self.textbuffer.get_tag_table().lookup('bold'), start_iter,end_iter)
-        #creating empty graph
+            result2 = result2 + elt + " ----> " + self.symbol_grounding_table[elt] + "\n\n"
+        data = [title0, result0, title1, result1, title2, result2]
+        GLib.idle_add(self.update_textview, data)
+
+        title3 = "\n 3. Inferring action's participant roles and multiplicities \n\n\n"
+        result3 = ""
+        ################## Action's participant roles ########################################
+        self.action_participants = {}
+        for elt in self.symbol_grounding_table.keys():
+            if self.symbol_grounding_table[elt] in list(self.actions.values()):
+                self.action_participants[elt] = {}
+                goal = KBListParticipantGoal()
+                results = KBListParticipantResult()
+                goal.class_name = self.symbol_grounding_table[elt].split(self.namespace).pop()
+                goal.namespace = self.namespace
+                self.list_participant_client.send_goal(goal)
+                self.list_participant_client.wait_for_result()
+                results = self.list_participant_client.get_result()
+                self.action_participants[elt]['role'] = []
+                self.action_participants[elt]['multiplicity'] = []
+                self.action_participants[elt]['participant'] = {}
+                result3 = result3 + "\n" + elt + " -------------------------------\n\n"
+                for i in range(len(results.classes)):
+                    if (results.classes[i] not in self.action_participants[elt]['role']) and (
+                            len(results.classes[i].split(self.generic_class_prefix)) < 2):
+                        self.action_participants[elt]['role'].append(results.classes[i].split(self.namespace).pop())
+                        self.action_participants[elt]['multiplicity'].append(results.multiplicity[i])
+                        result3 = result3 + results.multiplicity[i] + " --> " + results.classes[i] + "\n\n"
+
+        print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+        print(self.action_participants)
+        print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+
+        data = [title0, result0, title1, result1, title2, result2, title3, result3]
+        GLib.idle_add(self.update_textview, data)
+
+        title4 = "\n 4. Inferring potential role players in an action \n\n\n"
+        result4 = ""
+        ################## Action's participant roles ########################################
+        for elt in self.action_participants.keys():
+            result4 = result4 + "\n * " + elt + " ---------------------------------- \n\n"
+            for role in self.action_participants[elt]['role']:
+                self.action_participants[elt]['participant'][role] = []
+                result4 = result4 + "   +" + self.action_participants[elt]['multiplicity'][
+                    self.action_participants[elt]['role'].index(role)] + " " + role + "\n\n"
+                if role not in self.roles.keys():
+                    continue
+                for object in self.roles[role]['object']:
+                    goal = KBPotentialActionObjectGoal()
+                    results = KBPotentialActionObjectResult()
+                    goal.class_name = object
+                    goal.relation = self.roles[role]['action_relation'][0]
+                    goal.namespace = self.namespace
+                    self.potential_action_object_client.send_goal(goal)
+                    self.potential_action_object_client.wait_for_result()
+                    results = self.potential_action_object_client.get_result()
+                    if self.symbol_grounding_table[elt] in results.classes:
+                        self.action_participants[elt]['participant'][role].append(object)
+                        result4 = result4 + "       -" + self.classes[object] + "\n\n"
+
+        print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+        print(self.action_participants)
+        print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+
+        data=[title0 , result0 , title1 , result1 , title2 , result2 , title3 , result3 , title4 , result4]
+        GLib.idle_add(self.update_textview, data)
+        """
+        ########################################## Resolving conceptual relations #############################################################
+
+        self.class_equivalence={"Breakfast":["Milk", "Muesli"], "Robot":["Machine"], "Cup":["Mug"], "CookTable":{"Island"}}
+
+        title5 = "\n 5. Resolving conceptual relationships among objects \n\n\n"
+        result5 = ""
+        for cls in self.class_equivalence.keys():
+            result5+=self.classes[cls]+"\n = "
+            for elt in self.class_equivalence[cls]:
+                result5 += self.classes[elt] + ":"
+            result5 += "\n\n"
+
+        data = [title0, result0, title1, result1, title2, result2, title3, result3, title4, result4, title5, result5]
+        GLib.idle_add(self.update_textview, data)
+        ########################################## Resolving spatial relations among objects #############################################################
+        self.spatial_relations={"CookTable": ["support", ["Bottle", "Bowl", "Mug", "Box"]], "Bowl": ["contains", ["Spoon"]], "Bottle": ["contains",["Milk"]], "Box": ["contains",["Muesli"]], "Robot":["is infront of",["CookTable"]]}
+
+        title6 = "\n 6. Resolving spatial relationships among objects \n\n\n"
+        result6 = ""
+        for cls in self.spatial_relations.keys():
+            result6 += self.classes[cls] + "\n" + self.spatial_relations[cls][0]+ " "
+            for elt in self.spatial_relations[cls][1]:
+                result6 += self.classes[elt] + ":"
+            result6 += "\n\n"
+
+        data = [title0, result0, title1, result1, title2, result2, title3, result3, title4, result4, title5, result5, title6, result6]
+        GLib.idle_add(self.update_textview, data)
+        ########################################## Resolving properties of objects #############################################################
+        self.object_properties={"CookTable": ["Brown", "Large"], "Bowl": ["Red", "Small"], "Mug": ["Red", "Small"],"Spoon": ["Gray", "Small"], "Box": ["Green", "Medium"], "Milk": ["White", "Liquid"], "Muesli": ["Brown", "Powder"]}
+
+        title7 = "\n 7. Resolving conceptual relationships among objects \n\n\n"
+        result7 = ""
+        for cls in self.object_properties.keys():
+            result7 += self.classes[cls] + "\n has_color "+self.object_properties[cls][0]
+            result7 += "\n\n"
+
+        data = [title0, result0, title1, result1, title2, result2, title3, result3, title4, result4, title5, result5,title6, result6,title7, result7]
+        GLib.idle_add(self.update_textview, data)
+        ########################################## Generating scene graph #############################################################
+        """
+
+        graph = [["Robot", "test", "SampleFluid"], ["Robot", "need", "RinseFluid"],
+                 ["SampleFluid", "is_in", "SampleBottle"], ["RinseFluid", "is in", "RinseBottle"], ["RinseBottle", "is_left", "Pump"],
+                 ["SampleBottle", "is_right", "Pump"],
+                 ["Pump", "is_on", "SterilityTestTable"], ["RinseBottle", "is_on", "SterilityTestTable"], ["SampleBottle", "is_on", "SterilityTestTable"],
+                 ["Canister_1", "is_in", "DrainTray"], ["DrainTray", "is_part_of", "Pump"], ["Canister_2", "is_front", "Pump"],
+                 ["Canister_2", "is_on", "SterilityTestTable"], ["Robot", "look", "SterilityTestTable"], ["SampleFluid", "is", "Orange"]]
+
+        # creating empty graph
+        self.update_ontology_frame(graph)
+        self.thread_robot = Thread(target=self.move_robot, args=[])
+        self.thread_robot.daemon=True
+        self.thread_robot.start()
+        while not THREAD_KILLABLE:
+            GLib.idle_add(self.update_imagination_frame)
+            time.sleep(1. / self.observation_frequency)
+        self.thread_robot.join()
+
+
+    def read_text(self):
+        startIter, endIter = self.textbuffer.get_bounds()
+        self.text = self.textbuffer.get_text(startIter, endIter, False)
+        return False
+    def update_textview(self, text):
+        t=""
+        for i in range(len(text)):
+           t+=text[i]
+        self.textbuffer.set_text(t)
+
+        pivot=0
+        for i in range(len(text)//2):
+            start_iter = self.textbuffer.get_start_iter()
+            end_iter = self.textbuffer.get_start_iter()
+            start_iter.forward_chars(pivot)
+            pivot+=len(text[2*i])
+            end_iter.forward_chars(pivot)
+            self.textbuffer.apply_tag(self.textbuffer.get_tag_table().lookup('bold'), start_iter, end_iter)
+            pivot+=len(text[2*i+1])
+
+        return False
+
+    def update_ontology_frame(self, graph):
         self.nx_graph = nx.DiGraph()
         for rel in graph:
-            self.nx_graph.add_edge(rel[0],rel[2],label=rel[1])
+            self.nx_graph.add_edge(rel[0], rel[2], label=rel[1])
             time.sleep(1)
             self.nt = Network('100%', '100%', directed=True)
             self.nt.from_nx(self.nx_graph)
             self.nt.set_options("""
-                                                    const options = {
-                                                      "physics": {
-                                                        "enabled": true,
-                                                        "barnesHut": {
-                                                          "gravitationalConstant": -4200,
-                                                          "centralGravity": 0.95,
-                                                          "springLength": 90,
-                                                          "springConstant": 0.015,
-                                                          "damping": 0.01
-                                                        },
-                                                        "maxVelocity": 143,
-                                                        "minVelocity": 0.0001
-                                                      }
-                                                    }
-                                                    """)
+                                                            const options = {
+                                                              "physics": {
+                                                                "enabled": true,
+                                                                "barnesHut": {
+                                                                  "gravitationalConstant": -4200,
+                                                                  "centralGravity": 0.95,
+                                                                  "springLength": 90,
+                                                                  "springConstant": 0.015,
+                                                                  "damping": 0.01
+                                                                },
+                                                                "maxVelocity": 143,
+                                                                "minVelocity": 0.0001
+                                                              }
+                                                            }
+                                                            """)
             if self.nt is not None:
                 self.nt.options['physics']['enabled'] = self.dynamic_button.get_active()
             graphText = self.nt.generate_html()
@@ -1081,33 +1394,39 @@ class AppWindow(Gtk.ApplicationWindow):
         self.nx_graph.add_edge(20, 21, weight=5, label="loves")
         self.nx_graph.add_node(25, size=25, label='lonely', title='lonely node', group=3)
         """
+        self.spinner.stop()
+        return False
 
-        self.imagination_frame.imagine()
+    def update_imagination_frame(self):
+        self.imagination_frame.imagine(self.imaginator.observe())
         self.imagination_frame.redraw()
         self.imagination_frame.area.queue_draw()
-        self.spinner.stop()
-
+        return False
     def do_clicked(self, widget):
-        if(widget==self.proceed_button):
+        global THREAD_KILLABLE
+        if (widget == self.proceed_button):
             self.spinner.start()
-            thread = Thread(target=self.build_graph, args=[])
-            thread.start()
-
-            #thread=Thread(target=self.spin,args=['stop'])
-            #thread.start()
-            #thread.join()
+            THREAD_KILLABLE = False
+            self.read_text()
+            self.thread = Thread(target=self.build_graph, args=[])
+            self.thread.daemon=True
+            self.thread.start()
+            # thread=Thread(target=self.spin,args=['stop'])
+            # thread.start()
+            # thread.join()
 
         else:
-            if(widget==self.reset_button):
+            if (widget == self.reset_button):
                 self.textbuffer.set_text(json.dumps(self.context_template, indent=28, sort_keys=True))
-                self.nt=None
+                self.nt = None
                 self.ontology_frame.view.load_html("", "ontology.html")
                 self.imagination_frame.forget()
                 self.imagination_frame.redraw()
                 self.imagination_frame.area.queue_draw()
                 self.dynamic_button.set_active(True)
                 self.spinner.stop()
-
+                if (self.thread is not None):
+                    THREAD_KILLABLE = True
 
     def on_button_clicked(self, widget, tag):
         bounds = self.textbuffer.get_selection_bounds()
@@ -1124,14 +1443,16 @@ class AppWindow(Gtk.ApplicationWindow):
         self.textview.set_editable(widget.get_active())
 
     def on_cursor_toggled(self, widget):
-        self.textview.set_cursor_visible(widget.get_active())
+        if widget.get_active():
+            self.imaginator.robot_view = 1
+        else:
+            self.imaginator.robot_view = 0
 
     def on_dynamic_toggled(self, widget):
-            if self.nt is not None:
-                self.nt.options['physics']['enabled'] = widget.get_active()
-                graphText = self.nt.generate_html()
-                self.ontology_frame.view.load_html(graphText, "ontology.html")
-
+        if self.nt is not None:
+            self.nt.options['physics']['enabled'] = widget.get_active()
+            graphText = self.nt.generate_html()
+            self.ontology_frame.view.load_html(graphText, "ontology.html")
 
     def on_wrap_toggled(self, widget, mode):
         self.textview.set_wrap_mode(mode)
@@ -1211,7 +1532,7 @@ class Application(Gtk.Application):
         if not self.window:
             # Windows are associated with the application
             # when the last one is closed the application shuts down
-            self.window = AppWindow(application=self, title="NaivPhys4RP - Visualizing context-specific imagination")
+            self.window = AppWindow(application=self, title="NaivPhys4RP - Naive Physics For Robot Perception")
 
         self.window.present()
 
@@ -1229,14 +1550,21 @@ class Application(Gtk.Application):
 
     def on_about(self, action, param):
         about_dialog = Gtk.AboutDialog(transient_for=self.window, modal=True)
+        about_dialog.set_license(license="Distributed under Berkeley Software Distribution 4 (BSD-4)")
+        about_dialog.set_authors(authors=["Franklin Kenghagho Kenfack"])
+        about_dialog.set_version(version="V 0.1")
+        about_dialog.set_copyright(copyright="Copyrights 2023 reserved to Institute for Artificial Intelligence")
+        about_dialog.set_comments(comments="NaivPhys4RP is a White-box Causal Generative Model of Robot Perception based on Cognitive Emulation that attempts to capture aspects of human commonsense that enables scene understanding in dynamic and human-centered worlds.")
+        about_dialog.set_program_name(name="NaivPhys4RP --- Naive Physics for Robot Perception")
+        about_dialog.set_logo_icon_name(icon_name="../../resources/logo.png")
         about_dialog.present()
 
     def on_quit(self, action, param):
         self.quit()
 
+
 if __name__ == '__main__':
     rospy.init_node('naivphys4rp_imagination_node')
     app = Application()
     app.run(sys.argv)
-    rospy.spin()
-#graph_draw(g,edge_color="blue",vertex_fill_color=c,vertex_color=c, vertex_text=x, edge_text=y, edge_pen_width=3, vertex_font_size=19, edge_font_size=19, vertex_aspect=1. ,adjust_aspect=True, fit_view_ink=True, fit_view=True)
+# graph_draw(g,edge_color="blue",vertex_fill_color=c,vertex_color=c, vertex_text=x, edge_text=y, edge_pen_width=3, vertex_font_size=19, edge_font_size=19, vertex_aspect=1. ,adjust_aspect=True, fit_view_ink=True, fit_view=True)
